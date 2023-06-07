@@ -1,49 +1,180 @@
-import { extendConfig, extendEnvironment } from "hardhat/config";
-import { lazyObject } from "hardhat/plugins";
-import { HardhatConfig, HardhatUserConfig } from "hardhat/types";
-import path from "path";
+import { subtask } from "hardhat/config";
+import { TASK_COMPILE } from "hardhat/builtin-tasks/task-names";
+import {
+  TASK_VERIFY_ETHERSCAN,
+  TASK_VERIFY_GET_VERIFICATION_SUBTASKS,
+  TASK_VERIFY_SOURCIFY,
+  TASK_VERIFY_SOURCIFY_ATTEMPT_VERIFICATION,
+} from "./task-names";
+import {
+  BuildInfoNotFoundError,
+  ContractNotFoundError,
+  ContractVerificationFailedError,
+  VerificationAPIUnexpectedMessageError,
+} from "./errors";
+import { Sourcify } from "./sourcify";
 
-import { ExampleHardhatRuntimeEnvironmentField } from "./ExampleHardhatRuntimeEnvironmentField";
-// This import is needed to let the TypeScript compiler know that it should include your type
-// extensions in your npm package's types file.
-import "./type-extensions";
+interface VerificationResponse {
+  success: boolean;
+  message: string;
+}
 
-extendConfig(
-  (config: HardhatConfig, userConfig: Readonly<HardhatUserConfig>) => {
-    // We apply our default config here. Any other kind of config resolution
-    // or normalization should be placed here.
-    //
-    // `config` is the resolved config, which will be used during runtime and
-    // you should modify.
-    // `userConfig` is the config as provided by the user. You should not modify
-    // it.
-    //
-    // If you extended the `HardhatConfig` type, you need to make sure that
-    // executing this function ensures that the `config` object is in a valid
-    // state for its type, including its extensions. For example, you may
-    // need to apply a default value, like in this example.
-    const userPath = userConfig.paths?.newPath;
+interface VerificationArgs {
+  address: string;
+  contractFQN?: string;
+  listNetworks: boolean;
+}
 
-    let newPath: string;
-    if (userPath === undefined) {
-      newPath = path.join(config.paths.root, "newPath");
-    } else {
-      if (path.isAbsolute(userPath)) {
-        newPath = userPath;
-      } else {
-        // We resolve relative paths starting from the project's root.
-        // Please keep this convention to avoid confusion.
-        newPath = path.normalize(path.join(config.paths.root, userPath));
-      }
-    }
+interface VerificationInterfaceVerifyParams {
+  address: string;
+  files?: {
+    [index: string]: string;
+  };
+  chosenContract?: number;
+}
 
-    config.paths.newPath = newPath;
+interface VerificationInterface {
+  isVerified(address: string): Promise<Boolean>;
+  verify(params: VerificationInterfaceVerifyParams): Promise<any>;
+  getVerificationStatus(guid: string): Promise<any>;
+  getContractUrl(address: string, status?: string): string;
+}
+
+interface AttemptVerificationArgs {
+  address: string;
+  verificationInterface: VerificationInterface;
+  contractFQN: string;
+}
+
+/**
+ * Returns a list of verification subtasks.
+ */
+subtask(
+  TASK_VERIFY_GET_VERIFICATION_SUBTASKS,
+  async (): Promise<string[]> => {
+    return [TASK_VERIFY_SOURCIFY, TASK_VERIFY_ETHERSCAN];
   }
 );
 
-extendEnvironment((hre) => {
-  // We add a field to the Hardhat Runtime Environment here.
-  // We use lazyObject to avoid initializing things until they are actually
-  // needed.
-  hre.example = lazyObject(() => new ExampleHardhatRuntimeEnvironmentField());
-});
+/**
+ * Main Sourcify verification subtask.
+ *
+ * Verifies a contract on Sourcify
+ */
+subtask(TASK_VERIFY_SOURCIFY)
+  .addParam("address")
+  .addFlag("listNetworks")
+  .addParam("contractFQN")
+  .setAction(
+    async (
+      { address, listNetworks, contractFQN }: VerificationArgs,
+      { config, network, run, artifacts }
+    ) => {
+      if (listNetworks) {
+        // TODO: implement
+        // await printSourcifySupportedNetworks(config.etherscan.customChains);
+        return;
+      }
+
+      if (!network.config.chainId) {
+        // TODO: throw
+        return;
+      }
+
+      if (!contractFQN) {
+        return;
+      }
+
+      let artifactExists;
+      try {
+        artifactExists = await artifacts.artifactExists(contractFQN);
+      } catch (error) {
+        artifactExists = false;
+      }
+
+      if (!artifactExists) {
+        throw new ContractNotFoundError(contractFQN);
+      }
+
+      const sourcify = new Sourcify(network.config.chainId);
+
+      const status = await sourcify.isVerified(address);
+      if (status !== false) {
+        const contractURL = sourcify.getContractUrl(address, status);
+        console.log(`The contract ${address} has already been verified.
+${contractURL}`);
+        return;
+      }
+
+      // Make sure that contract artifacts are up-to-date
+      await run(TASK_COMPILE, { quiet: true });
+
+      // First, try to verify the contract using the minimal input
+      const {
+        success: minimalInputVerificationSuccess,
+        message: verificationMessage,
+      }: VerificationResponse = await run(
+        TASK_VERIFY_SOURCIFY_ATTEMPT_VERIFICATION,
+        {
+          address,
+          verificationInterface: sourcify,
+          contractFQN,
+        }
+      );
+
+      if (minimalInputVerificationSuccess) {
+        return;
+      }
+
+      throw new ContractVerificationFailedError(verificationMessage, []);
+    }
+  );
+
+subtask(TASK_VERIFY_SOURCIFY_ATTEMPT_VERIFICATION)
+  .addParam("address")
+  .addParam("contractFQN")
+  .setAction(
+    async (
+      { address, verificationInterface, contractFQN }: AttemptVerificationArgs,
+      { artifacts }
+    ): Promise<VerificationResponse> => {
+      const buildInfo = await artifacts.getBuildInfo(contractFQN);
+      if (buildInfo === undefined) {
+        throw new BuildInfoNotFoundError(contractFQN);
+      }
+
+      const artifact = await artifacts.readArtifact(contractFQN);
+      const chosenContract = Object.keys(buildInfo.output.contracts).findIndex(
+        (source) => source === artifact.sourceName
+      );
+
+      const response = await verificationInterface.verify({
+        address,
+        files: {
+          hardhatOutputBuffer: JSON.stringify(buildInfo),
+        },
+        chosenContract,
+      });
+
+      if (!(response.isFailure() || response.isSuccess())) {
+        // Reaching this point shouldn't be possible unless the API is behaving in a new way.
+        throw new VerificationAPIUnexpectedMessageError(response.message);
+      }
+
+      if (response.isSuccess()) {
+        const contractURL = verificationInterface.getContractUrl(
+          address,
+          response.getStatus()
+        );
+        console.log(`Successfully verified contract ${
+          contractFQN.split(":")[1]
+        } on Sourcify.
+${contractURL}`);
+      }
+
+      return {
+        success: response.isSuccess(),
+        message: "Contract successfuly verified on Sourcify",
+      };
+    }
+  );
