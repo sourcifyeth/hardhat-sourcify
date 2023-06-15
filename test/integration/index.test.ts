@@ -29,36 +29,6 @@ describe("verify task integration tests", () => {
         [],
         this.hre
       );
-      duplicatedContractAddress = await deployContract(
-        "contracts/DuplicatedContract.sol:DuplicatedContract",
-        [],
-        this.hre
-      );
-      normalLibAddress = await deployContract("NormalLib", [], this.hre);
-      constructorLibAddress = await deployContract(
-        "ConstructorLib",
-        [],
-        this.hre
-      );
-      onlyNormalLibContractAddress = await deployContract(
-        "OnlyNormalLib",
-        [],
-        this.hre,
-        undefined,
-        { libraries: { NormalLib: normalLibAddress } }
-      );
-      bothLibsContractAddress = await deployContract(
-        "BothLibs",
-        [50],
-        this.hre,
-        undefined,
-        {
-          libraries: {
-            NormalLib: normalLibAddress,
-            ConstructorLib: constructorLibAddress,
-          },
-        }
-      );
     });
 
     it.only("should verify a contract on Sourcify", async function () {
@@ -82,7 +52,7 @@ describe("verify task integration tests", () => {
 
       assert.equal(logStub.callCount, 1);
       (expect(logStub.getCall(0)).to.be as any)
-        .calledWidth(`Successfully verified contract SimpleContract on Sourcify.
+        .calledWith(`Successfully verified contract SimpleContract on Sourcify.
 https://repo.sourcify.dev/contracts/full_match/31337/${simpleContractAddress}/`);
       logStub.restore();
       assert.isUndefined(taskResponse);

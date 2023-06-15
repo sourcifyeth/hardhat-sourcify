@@ -4,7 +4,7 @@ import {
   ContractVerificationInvalidStatusCodeError,
 } from "./errors";
 import { sendGetRequest, sendPostJSONRequest } from "./undici";
-import { NomicLabsHardhatPluginError } from "hardhat/src/plugins";
+import { NomicLabsHardhatPluginError } from "hardhat/plugins";
 
 class HardhatSourcifyError extends NomicLabsHardhatPluginError {
   constructor(message: string, parent?: Error) {
