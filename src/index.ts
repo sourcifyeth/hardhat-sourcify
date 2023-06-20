@@ -77,11 +77,12 @@ subtask(TASK_VERIFY_SOURCIFY)
       }
 
       if (!network.config.chainId) {
-        // TODO: throw
+        console.log("Missing chainId");
         return;
       }
 
       if (!contractFQN) {
+        console.log("Missing contract fully qualified name");
         return;
       }
 
